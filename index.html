@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>实景 3D 展示 · Live-Action</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  /* ---- HUD ---- */
+  .hud { position: fixed; z-index: 10; color: #dde3ee; font: 13px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; }
+  #title { top: 14px; left: 16px; }
+  #title h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 1px; }
+  #title p { margin: 2px 0 0; opacity: .65; font-size: 12px; }
+  #hint { bottom: 12px; left: 16px; opacity: .55; font-size: 12px; }
+  #status { top: 14px; right: 16px; text-align: right; opacity: .8; }
+  #coords { position: fixed; z-index: 10; top: 38px; right: 16px; text-align: right; pointer-events: none;
+            font: 12px/1.65 Consolas, "SF Mono", Menlo, monospace; color: #9fb0cc; text-shadow: 0 1px 3px rgba(0,0,0,.85); }
+  #coords .l1 { color: #dde3ee; font-weight: 600; letter-spacing: .5px; }
+  #coords .l2 { opacity: .75; }
+  #coords b { font-weight: 600; margin: 0 1px; }
+  #coords .x { color: #ff6b6b; } #coords .y { color: #74e08a; } #coords .z { color: #6ba8ff; }
+
+  /* ---- model switcher ---- */
+  #models { position: fixed; z-index: 11; bottom: 14px; right: 16px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70vw; }
+  #models button {
+    pointer-events: auto; cursor: pointer; border: 1px solid rgba(255,255,255,.25); border-radius: 20px;
+    background: rgba(20,26,38,.72); color: #cfd8ea; padding: 7px 16px; font-size: 13px; backdrop-filter: blur(6px);
+    transition: all .18s ease;
+  }
+  #models button:hover { border-color: rgba(255,255,255,.6); color: #fff; }
+  #models button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+
+  /* ---- directional pad ---- */
+  #padWrap { position: fixed; z-index: 12; left: 16px; bottom: 16px; display: flex; align-items: flex-end; gap: 12px; }
+  #pad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 4px; }
+  #pad button { width: 44px; height: 44px; padding: 0; border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+    background: rgba(20,26,38,.7); color: #cfd8ea; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(6px); transition: background .12s, transform .08s, border-color .12s; touch-action: none; user-select: none; }
+  #pad button:hover { background: rgba(47,111,237,.3); border-color: rgba(255,255,255,.55); }
+  #pad button.press { background: #2f6fed; border-color: #2f6fed; transform: scale(.92); }
+  #pad button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #pad .hub { border: 1px dashed rgba(255,255,255,.2); background: rgba(12,16,24,.6); cursor: default; }
+  #pad .hub.on { border-style: solid; border-color: #2f6fed; background: rgba(47,111,237,.25); }
+  #padWrap .col { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+  #modeBtn { border: 1px solid rgba(255,255,255,.22); border-radius: 10px; background: rgba(20,26,38,.7); color: #cfd8ea;
+    padding: 9px 12px; font: 13px/1 "Segoe UI", "PingFang SC", sans-serif; cursor: pointer; backdrop-filter: blur(6px);
+    display: flex; align-items: center; gap: 7px; }
+  #modeBtn:hover { border-color: rgba(255,255,255,.55); color: #fff; }
+  #modeBtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #resetBtn { border: 1px solid rgba(255,255,255,.16); border-radius: 10px; background: rgba(20,26,38,.55); color: #9fb0cc;
+    padding: 7px 12px; font: 12px/1 "Segoe UI", "PingFang SC", sans-serif; cursor: pointer; }
+  #resetBtn:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+
+  /* ---- overlay canvas: center marker + animated arrows ---- */
+  #fx { position: fixed; inset: 0; z-index: 11; pointer-events: none; }
+
+  /* ---- loading overlay ---- */
+  #loading { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+             flex-direction: column; gap: 14px; background: #0b0e14; color: #8fa2c0; font: 14px/1 "Segoe UI", sans-serif;
+             transition: opacity .4s; }
+  #loading.gone { opacity: 0; pointer-events: none; }
+  .spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.15); border-top-color: #2f6fed; animation: r 1s linear infinite; }
+  @keyframes r { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="title" class="hud">
+  <h1>LIVE-ACTION · 实景 3D</h1>
+  <p>3D Gaussian Splatting 实景模型展示</p>
+</div>
+<div id="status" class="hud"></div>
+<div id="coords"></div>
+<div id="hint" class="hud" style="bottom: auto; top: 52px">双击画面选中心点 · 左键拖拽旋转 · 滚轮缩放 · 右键平移</div>
+<div id="models"></div>
+
+<div id="padWrap">
+  <div id="pad"></div>
+  <div class="col">
+    <button id="modeBtn"></button>
+    <button id="resetBtn">回到初始中心</button>
+  </div>
+</div>
+
+<canvas id="fx"></canvas>
+
+<div id="loading"><div class="spin"></div><div id="loading-text">正在加载实景模型…</div></div>
+
+<!-- three.js 与 GaussianSplats3D 通过 ESM CDN 引入（jsDelivr 为国内可达镜像） -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.2.3/build/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+
+<script>
+// 模块加载失败兜底：若 6s 内未创建 canvas，提示网络/CDN 问题
+window.addEventListener('load', () => setTimeout(() => {
+  if (!document.querySelector('#app canvas')) {
+    const l = document.getElementById('loading');
+    if (l && !l.querySelector('.err')) {
+      l.classList.add('err');
+      document.getElementById('loading-text').textContent =
+        '页面脚本未就绪：请确认浏览器可访问 cdn.jsdelivr.net，并通过本地 HTTP 服务打开本页（如 python -m http.server）。';
+    }
+  }
+}, 6000));
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { Viewer, SceneFormat } from '@mkkellogg/gaussian-splats-3d';
+
+const statusEl = document.getElementById('status');
+const loadingEl = document.getElementById('loading');
+const loadingTextEl = document.getElementById('loading-text');
+const modelsEl = document.getElementById('models');
+
+// ---- 数学空间坐标约定：Z 轴朝上（X 向右、Y 向屏幕内），三个默认量集中在此 ----
+const UP = [0, 0, 1];                              // 世界“上”方向
+const DEF_POS = [1.44, 1.19, -0.52];                  // 默认相机位 = 用户标定的正面（相对中心：方位 -161°、仰角 -13°、距离 4.55）
+const DEF_TARGET = [0, -3, 0.5];                   // 默认注视点（两模型可见主体都落在这附近）
+// 建模数据→展示世界坐标的基变换（四元数 [x,y,z,w]）。
+// 实测该建模的“天”在原始 -X、“地”在 +X，所以用 Ry(90)∘Rx(90)：
+// raw(x,y,z) -> world(y, -z, -x)，即 raw -X→world +Z(天)、竖向抬起，且保持 world Y 不变
+const SCENE_ROT = [0.5, 0.5, -0.5, 0.5];
+
+// ---------------------------------------------------------------
+// 模型清单：默认扫描 res/manifest.js（见该文件说明）；
+// 也可通过 URL 参数临时指定：index.html?file=res/xxx.ply&name=自定义名称
+// ---------------------------------------------------------------
+const DEFAULT_MODELS = [{ name: '石狮子', file: 'res/lion.ply' }];
+
+let MODELS = [...DEFAULT_MODELS];
+try {
+  // manifest.js 是普通脚本，用动态 <script> 引入后读取全局 SPLAT_MANIFEST
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'res/manifest.js'; s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  if (Array.isArray(window.SPLAT_MANIFEST) && window.SPLAT_MANIFEST.length) MODELS = window.SPLAT_MANIFEST;
+} catch (e) { /* 无清单时退回默认 */ }
+
+const urlFile = new URLSearchParams(location.search).get('file');
+if (urlFile) MODELS = [{ name: new URLSearchParams(location.search).get('name') || decodeURIComponent(urlFile.split('/').pop()), file: urlFile }, ...MODELS];
+
+// ---------------------------------------------------------------
+// Viewer：GaussianSplats3D 自带轨道相机控制（旋转/缩放/平移）；
+// v0.2.3 的加载是叠加式的、无移除 API，因此切换模型时重建 Viewer
+// ---------------------------------------------------------------
+let viewer = null;
+let currentFile = null;
+
+function createViewer() {
+  const v = new Viewer({
+    rootElement: document.getElementById('app'),   // v0.2.3 用 rootElement，非 container
+    cameraUp: UP,                                   // 数学坐标约定：Z 轴朝上
+    initialCameraPosition: DEF_POS,
+    initialCameraLookAt: DEF_TARGET,
+    gpuAcceleratedSort: true,                       // GPU 预计算排序距离
+    halfPrecisionCovariancesOnGPU: true,            // 半精度协方差，省显存
+    sharedMemoryForWorkers: false,                  // 避免依赖 COOP/COEP 跨源隔离头
+    ignoreDevicePixelRatio: false,
+  });
+  // 接管焦点选取：库默认“单击即改焦点”，与需求“双击选中心点”冲突，先屏蔽
+  v.checkForFocalPointChange = () => {};
+  // 解除轨道控件的仰角限位，允许上/下翻转整圈
+  if (v.controls) { v.controls.minPolarAngle = 0; v.controls.maxPolarAngle = Math.PI; }
+
+  // 深色渐变环境背景，突出实景主体
+  const c = document.createElement('canvas'); c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#141a26'); grad.addColorStop(.55, '#0b0e14'); grad.addColorStop(1, '#05070b');
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  v.threeScene.background = tex;                 // v0.2.3 无 getScene()，直接访问内部 threeScene
+
+  // 地面参考网格（可开关）：GridHelper 默认铺在 XZ 面（法线 +Y），
+  // Z-up 约定下地面应是 XY 面，绕 X 转 90° 让法线朝 +Z
+  const grid = new THREE.GridHelper(20, 40, 0x2a3a55, 0x1a2333);
+  grid.rotation.x = Math.PI / 2;
+  grid.position.z = -0.001;
+  grid.visible = gridVisible;
+  v.threeScene.add(grid);
+  return v;
+}
+let gridVisible = true;
+
+function setLoading(on, text) {
+  loadingTextEl.textContent = text || '正在加载实景模型…';
+  loadingEl.classList.toggle('gone', !on);
+}
+
+async function swapViewer() {
+  if (viewer) { const old = viewer; viewer = null; try { await old.dispose(); } catch (e) {} }
+  document.getElementById('app').innerHTML = '';
+  center3D = null; held.clear(); syncHub();      // 模型切换后中心点回到默认
+  viewer = createViewer();
+  window.__viewer = viewer;               // 调试/验收钩子：暴露相机与轨道目标，便于比对操作前后变化
+  return viewer;
+}
+
+async function loadModel(model) {
+  setLoading(true, `正在加载「${model.name}」…`);
+  statusEl.textContent = '加载中…';
+  currentFile = model.file;
+  try {
+    const v = await swapViewer();
+    await v.addSplatScene(model.file, {
+      format: model.format,
+      splatAlphaRemovalThreshold: 5,     // 过滤近乎透明的 splat
+      showLoadingSpinner: false,
+      position: model.position || [0, 0, 0],
+      // 缺省用 SCENE_ROT 把建模数据转到展示坐标；清单里显式写了 rotation 则以其为准
+      rotation: model.rotation || SCENE_ROT,               // 注意：四元数 [x,y,z,w]
+      scale: normScale(model.scale),               // 库要求 [x,y,z] 数组，清单里写数字也可
+    });
+    statusEl.textContent = `${model.name} · ${fmtSplats(v.splatMesh)} splats`;
+    v.start();
+    buildButtons();
+    setLoading(false);
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = '加载失败';
+    setLoading(true, `「${model.name}」加载失败：${err.message || err}。请确认已启动本地 HTTP 服务且浏览器可访问 CDN。`);
+  }
+}
+
+function normScale(s) {
+  if (!s) return [1, 1, 1];
+  return Array.isArray(s) ? s : [s, s, s];
+}
+
+function fmtSplats(mesh) {
+  const n = mesh?.getSplatCount?.() ?? 0;
+  return n ? n.toLocaleString() : '?';
+}
+
+// ---------------------------------------------------------------
+// 中心点选取（双击）+ 方向盘（环绕/平移）+ 中心点箭头动效
+// ---------------------------------------------------------------
+const ROT_SPEED = Math.PI / 3;      // 环绕角速度 60°/s
+const PAN_FACTOR = 0.22;            // 平移速度 = 相机到中心距离 × 此系数
+
+let mode = 'rotate';                // 'rotate' | 'pan'
+let center3D = null;                // 双击选中的世界坐标（null = 用轨道默认目标）
+let centerNext = null;              // 中心点过渡动画终点
+const held = new Set();             // 当前按下的方向盘按钮（存 "x,y"）
+const fx = { dir: null, glow: 0, phase: 0, flash: 0 };
+
+const padEl = document.getElementById('pad');
+const hubEl = Object.assign(document.createElement('button'), { className: 'hub', title: '当前中心点' });
+hubEl.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+
+// 3×3 方向盘：中心为指示点，周围 8 个方向（含四个倾斜方向）
+const DIRS = [[-1,-1],[0,-1],[1,-1],[-1,0],null,[1,0],[-1,1],[0,1],[1,1]];
+const CHEV = '<svg viewBox="0 0 24 24"><path d="M12 19V6"/><path d="M6 11l6-6 6 6"/></svg>';
+DIRS.forEach((d, i) => {
+  if (!d) { padEl.appendChild(hubEl); return; }
+  const b = document.createElement('button');
+  b.innerHTML = CHEV;
+  b.firstChild && b.firstChild.style.setProperty('transform', `rotate(${Math.atan2(-d[1], d[0]) * -180 / Math.PI + 90}deg)`);
+  b.title = `dir ${d[0]},${d[1]}`;
+  const key = d.join(',');
+  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); b.classList.add('press'); held.add(key); });
+  const off = () => { b.classList.remove('press'); held.delete(key); };
+  b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('lostpointercapture', off);
+  padEl.appendChild(b);
+});
+function syncHub() { hubEl.classList.toggle('on', !!center3D); }
+
+// 平移 / 旋转 切换
+const ICON_PAN = '<svg viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M14 6l6 6-6 6"/></svg>';
+const ICON_ROT = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/></svg>';
+const modeBtn = document.getElementById('modeBtn');
+function syncMode() {
+  modeBtn.innerHTML = (mode === 'rotate' ? ICON_ROT : ICON_PAN) + `<span>${mode === 'rotate' ? '旋转' : '平移'}</span>`;
+  modeBtn.title = '切换：围绕中心点旋转 / 平移视角';
+}
+modeBtn.onclick = () => { mode = mode === 'rotate' ? 'pan' : 'rotate'; syncMode(); };
+document.getElementById('resetBtn').onclick = () => {
+  if (!viewer) return;
+  const cam = viewer.camera;
+  center3D = null; centerNext = null;
+  cam.up.set(UP[0], UP[1], UP[2]);                    // 翻转过的 up 一并归位
+  cam.position.set(DEF_POS[0], DEF_POS[1], DEF_POS[2]);
+  viewer.controls.target.set(DEF_TARGET[0], DEF_TARGET[1], DEF_TARGET[2]);
+  cam.lookAt(viewer.controls.target);
+  syncHub();
+  statusEl.textContent = '视角与中心点已复位';
+};
+syncMode();
+
+// ---- 双击（兼容触屏双击）选中心点 ----
+let lastTap = { t: 0, x: 0, y: 0 };
+window.addEventListener('pointerup', e => {
+  if (e.button !== 0 || !viewer || !viewer.splatMesh) return;
+  if (e.target.closest && e.target.closest('#padWrap, #models, #loading')) return;   // 不干扰 UI
+  const rect = document.getElementById('app').getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const now = performance.now();
+  const isDouble = now - lastTap.t < 350 && Math.hypot(x - lastTap.x, y - lastTap.y) < 14;
+  lastTap = { t: now, x, y };
+  if (isDouble) { lastTap.t = 0; pickCenter(x, y, rect); }
+});
+
+const _hits = [], _px = new THREE.Vector2(), _dim = new THREE.Vector2(), _pt = new THREE.Vector3();
+function pickCenter(x, y, rect) {
+  _px.set(x, y);                                    // 库要求左上原点的像素坐标
+  _dim.set(rect.width, rect.height);
+  _hits.length = 0;
+  viewer.raycaster.setFromCameraAndScreenPosition(viewer.camera, _px, _dim);
+  viewer.raycaster.intersectSplatMesh(viewer.splatMesh, _hits);
+  if (!_hits.length) { statusEl.textContent = '这一点没有拾到模型，换个位置双击'; fx.flash = .5; return; }
+  center3D = _hits[0].origin.clone();
+  centerNext = center3D.clone();
+  fx.flash = 1; syncHub();
+  const p = center3D;
+  statusEl.textContent = `中心点 (${fxv(-p.x)}, ${fxv(p.y)}, ${fxv(p.z)})`;
+}
+
+// ---- 相机操作：自己转动偏移向量（库的旋转/平移辅助函数是私有的）----
+const _off = new THREE.Vector3(), _sph = new THREE.Spherical(), _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(),
+      _pd = new THREE.Vector3(), _ax = new THREE.Vector3(), _qr = new THREE.Quaternion();
+const _UPZ = new THREE.Vector3(UP[0], UP[1], UP[2]);
+// 不用球坐标累加，而用四元数直接转动“相机相对中心点的偏移 + 相机 up”。
+// 球坐标的 phi 被定义在 [0, π]，越极点时必须镜像（-phi, theta+π 其实是同一个点），
+// 逐帧累加会卡在极点上往复抖动；绕固定轴旋转没有这个奇点，
+// 所以上/下可以一直翻整圈，左/右可以无限转圈，且 up 跟着刚体走不会出现画面瞬时翻转。
+function orbit(dTheta, dPhi) {
+  const cam = viewer.camera, tgt = viewer.controls.target;
+  _off.copy(cam.position).sub(tgt);
+  if (_off.lengthSq() < 1e-8) return;
+  if (dPhi) {
+    _ax.setFromMatrixColumn(cam.matrixWorld, 0);          // 俯仰轴 = 屏幕水平的相机右轴
+    _qr.setFromAxisAngle(_ax, dPhi);
+    _off.applyQuaternion(_qr);
+    cam.up.applyQuaternion(_qr);
+  }
+  if (dTheta) {
+    _qr.setFromAxisAngle(_UPZ, dTheta);                   // 方位轴 = 世界上方向（Z），水平环绕始终是水平面
+    _off.applyQuaternion(_qr);
+    cam.up.applyQuaternion(_qr);
+  }
+  cam.up.normalize();                                     // 防长期数值漂移
+  cam.position.copy(tgt).add(_off);
+  cam.lookAt(tgt);
+}
+function pan(dx, dy) {
+  const cam = viewer.camera, tgt = viewer.controls.target;
+  const k = cam.position.distanceTo(tgt) * PAN_FACTOR;
+  _v1.setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(dx * k);
+  _v2.setFromMatrixColumn(cam.matrixWorld, 1).multiplyScalar(dy * k);
+  _pd.copy(_v1).add(_v2);
+  cam.position.add(_pd);
+  tgt.add(_pd);
+  // 中心点随视角一起平移：否则 target 每帧被 centerNext 回拉，
+  // 平移会退化成“相机滑走、中心钉死”
+  if (center3D) center3D.add(_pd);
+  if (centerNext) centerNext.add(_pd);
+}
+function stepCamera(dt) {
+  if (!viewer || !viewer.controls) return;
+  // 中心点过渡：平滑把轨道目标推到双击拾取点
+  if (centerNext) {
+    viewer.controls.target.lerp(centerNext, Math.min(1, dt * 7));
+    if (viewer.controls.target.distanceTo(centerNext) < 1e-3) { viewer.controls.target.copy(centerNext); centerNext = null; }
+  }
+  if (!held.size) { fx.dir = null; return; }
+  let ax = 0, ay = 0;
+  held.forEach(k => { const [x, y] = k.split(',').map(Number); ax += x; ay += y; });
+  const n = Math.hypot(ax, ay) || 1; ax /= n; ay /= n;
+  fx.dir = { x: ax, y: ay };
+  if (mode === 'rotate') orbit(-ax * ROT_SPEED * dt, -ay * ROT_SPEED * dt);
+  else pan(ax * dt, ay * dt);
+}
+
+// ---- 覆盖层：坐标读数 + 方位罗盘 + 中心点标记 + 3D 方向箭头 ----
+const fxEl = document.getElementById('fx'), fxc = fxEl.getContext('2d');
+function resizeFx() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // canvas 不受 inset:0 约束（会取固有属性尺寸），必须显式定 CSS 尺寸，
+  // 否则 dpr=2 下覆盖层会被放大到 2× 位置、整体落在视口外
+  fxEl.style.width = innerWidth + 'px';
+  fxEl.style.height = innerHeight + 'px';
+  fxEl.width = innerWidth * dpr; fxEl.height = innerHeight * dpr;
+  fxc.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resizeFx); resizeFx();
+
+function projectTo(p, rect) {
+  _pt.copy(p).project(viewer.camera);
+  if (_pt.z > 1) return null;                       // 在相机背后
+  return { x: (_pt.x * .5 + .5) * rect.width, y: (-_pt.y * .5 + .5) * rect.height };
+}
+
+let hudOn = true;
+const coordsEl = document.getElementById('coords');
+let _hudT = 0;
+// 先按显示精度归整再取符号，否则 -1e-9 会印成 “-0.00”、-0.0001 会印成 “-0°”
+const fxv = v => { const n = Math.abs(v) < .005 ? 0 : v; return (n < 0 ? '-' : '+') + Math.abs(n).toFixed(2); };
+const fxdeg = v => (Math.abs(v) < .5 ? 0 : v).toFixed(0);
+const fmt3 = (x, y, z) => `<b class="x">${fxv(x)}</b> <b class="y">${fxv(y)}</b> <b class="z">${fxv(z)}</b>`;
+
+// 右上角实时坐标：相机位置 + 中心点位置 + 方位/仰角/距离，随时知道自己在哪一面
+function drawHud(now) {
+  if (now - _hudT < 90) return;
+  _hudT = now;
+  if (!viewer || !viewer.controls) return;
+  if (!hudOn) { coordsEl.innerHTML = ''; return; }
+  const p = viewer.camera.position, t = viewer.controls.target;
+  _off.copy(p).sub(t);
+  // THREE.Spherical 的 phi 是从 +Y 极轴量起的，Z-up 约定下没意义；
+  // 自己算：仰角 = 偏离 XY 地面的角，方位 = 从默认机位（-Y 方向）绕 Z 的夹角，
+  // 以“按右”为正，所以默认视角读作 0°
+  const az = Math.atan2(-_off.x, -_off.y) * 180 / Math.PI;
+  const el = Math.atan2(_off.z, Math.hypot(_off.x, _off.y)) * 180 / Math.PI;
+  coordsEl.innerHTML =
+    `<div class="l1">${fmt3(-p.x, p.y, p.z)}</div>` +
+    `<div class="l2">中心 ${fmt3(-t.x, t.y, t.z)}</div>` +
+    `<div class="l2">方位 ${fxdeg(az)}° · 仰角 ${fxdeg(el)}° · 距离 ${p.distanceTo(t).toFixed(2)}</div>`;
+}
+
+// ---- 方位罗盘：把展示坐标系的 X/Y/Z 轴变换到相机视图空间再画到右上角 ----
+// 以当前正面视角为主视图：屏幕右=展示X、朝用户=展示Y、上=展示Z。
+// 相机已绕到 world +Y 一侧，所以展示X = world -X、展示Y = world +Y（与下方读数一致）
+const AXES = [
+  { v: new THREE.Vector3(-1, 0, 0), c: '#ff6b6b', l: 'X' },
+  { v: new THREE.Vector3(0, 1, 0), c: '#74e08a', l: 'Y' },
+  { v: new THREE.Vector3(0, 0, 1), c: '#6ba8ff', l: 'Z' },
+];
+const _vd = new THREE.Vector3();
+function drawGizmo() {
+  const R = Math.min(34, innerWidth * .07), gx = innerWidth - R - 24, gy = R + 116;
+  const items = AXES.map(a => {
+    _vd.copy(a.v).transformDirection(viewer.camera.matrixWorldInverse);   // x右 y上 z朝向观察者
+    return { c: a.c, l: a.l, sx: _vd.x, sy: _vd.y, z: _vd.z };
+  }).sort((m, n) => m.z - n.z);                                          // 远的先画，近的后画
+  fxc.save(); fxc.translate(gx, gy);
+  fxc.globalAlpha = .22; fxc.strokeStyle = '#8fa2c0'; fxc.lineWidth = 1;
+  fxc.beginPath(); fxc.arc(0, 0, R + 12, 0, Math.PI * 2); fxc.stroke();
+  items.forEach(it => {
+    fxc.globalAlpha = .4 + .6 * ((it.z + 1) / 2);
+    fxc.strokeStyle = fxc.fillStyle = it.c; fxc.lineWidth = 2;
+    const ex = it.sx * R, ey = -it.sy * R, a = Math.atan2(ey, ex);
+    fxc.beginPath(); fxc.moveTo(0, 0); fxc.lineTo(ex, ey); fxc.stroke();
+    fxc.save(); fxc.translate(ex, ey); fxc.rotate(a);
+    fxc.beginPath(); fxc.moveTo(6, 0); fxc.lineTo(-3, 4); fxc.lineTo(-3, -4); fxc.closePath(); fxc.fill();
+    fxc.restore();
+    fxc.font = 'bold 11px Consolas, monospace'; fxc.textAlign = 'center'; fxc.textBaseline = 'middle';
+    fxc.fillText(it.l, it.sx * (R + 13), -it.sy * (R + 13) + (it.sx ? 0 : -1));
+  });
+  fxc.globalAlpha = .85; fxc.fillStyle = '#dde3ee';
+  fxc.beginPath(); fxc.arc(0, 0, 2, 0, Math.PI * 2); fxc.fill();
+  fxc.restore();
+}
+
+const _P = new THREE.Vector3(), _A = new THREE.Vector3(), _K = new THREE.Vector3(),
+      _E1 = new THREE.Vector3(), _E3 = new THREE.Vector3(),
+      _Q = new THREE.Quaternion(), _W = new THREE.Vector3(), _TT = new THREE.Vector3();
+function projVec(v, rect) {
+  _pt.copy(v).project(viewer.camera);
+  return { x: (_pt.x * .5 + .5) * rect.width, y: (-_pt.y * .5 + .5) * rect.height, behind: _pt.z > 1 };
+}
+function arrowHead(x, y, ang) {
+  fxc.save(); fxc.translate(x, y); fxc.rotate(ang);
+  fxc.beginPath(); fxc.moveTo(9, 0); fxc.lineTo(-5, 6); fxc.lineTo(-5, -6); fxc.closePath(); fxc.fill();
+  fxc.restore();
+}
+
+// 箭头不再画成屏幕平的装饰，而是放在“真实转动平面”里的一个 3D 圆环，
+// 投影后自带透视：水平环绕时是横撑的椭圆，上下翻转时是竖立的椭圆
+function drawArrow3D(rect) {
+  const cam = viewer.camera, tgt = viewer.controls.target;
+  const dist = cam.position.distanceTo(tgt), ax = fx.dir.x, ay = fx.dir.y;
+  const pulse = .5 + .5 * Math.sin(fx.phase * 8);
+  fxc.save();
+  fxc.globalAlpha = fx.glow;
+  fxc.strokeStyle = fxc.fillStyle = '#7fb0ff';
+  fxc.lineWidth = 2.6; fxc.lineCap = 'round';
+
+  if (mode === 'pan') {                              // 平移：沿相机右/上轴的 3D 直线箭头
+    _A.setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(ax);
+    _K.setFromMatrixColumn(cam.matrixWorld, 1).multiplyScalar(ay);
+    _TT.copy(_A).add(_K);
+    if (_TT.lengthSq() < 1e-8) { fxc.restore(); return; }
+    _TT.normalize();
+    const L = dist * .34;
+    _W.copy(tgt).addScaledVector(_TT, -L * .12);
+    _E1.copy(tgt).addScaledVector(_TT, L);
+    const a0 = projVec(_W, rect), a1 = projVec(_E1, rect);
+    if (!a0.behind && !a1.behind) {
+      fxc.beginPath(); fxc.moveTo(a0.x, a0.y); fxc.lineTo(a1.x, a1.y); fxc.stroke();
+      arrowHead(a1.x, a1.y, Math.atan2(a1.y - a0.y, a1.x - a0.x));
+    }
+    fxc.restore(); return;
+  }
+
+  // 角速度方向与 orbit() 严格一致：俯仰绕相机右轴、方位绕世界上方向（Z）
+  _P.copy(cam.position).sub(tgt);
+  _A.setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(-ay);
+  _A.add(_K.set(UP[0], UP[1], UP[2]).multiplyScalar(-ax));
+  if (_A.lengthSq() < 1e-8) { fxc.restore(); return; }
+  _A.normalize();
+  // 纯仰俯时转动平面恰好包含视线，环会被投影塌成一条竖线；
+  // 把平面法线朝视线方向偷偏一点（下限 FLOOR），保证环始终以椭圆出现。
+  // 实测投影椭圆的高宽比≈ |法线·视线|，故 FLOOR 直接就是“环多张开”的下限。
+  // 只影响指示图形状：弧、整圈、箭头用的都是偏后的同一个 _A，仍严格自洽。
+  const FLOOR = .42;
+  _E3.copy(tgt).sub(cam.position).normalize();
+  const ndv = Math.abs(_A.dot(_E3));
+  if (ndv < FLOOR) _A.addScaledVector(_E3, FLOOR - ndv).normalize();
+  _E1.copy(_P).addScaledVector(_A, -_P.dot(_A));                          // 平面内指向相机的半径
+  if (_E1.lengthSq() < 1e-8) _E1.set(1, 0, 0).addScaledVector(_A, -_A.x);
+  _E1.normalize();
+  const R = dist * .3, span = 1.1 + .3 * pulse, N = 44;
+
+  fxc.globalAlpha = fx.glow * .26; fxc.lineWidth = 1.4;                   // 整圈淡描：交代转动平面
+  let prev = null;
+  for (let i = 0; i <= N; i++) {
+    _Q.setFromAxisAngle(_A, Math.PI * 2 * i / N);
+    _W.copy(_E1).applyQuaternion(_Q).multiplyScalar(R).add(tgt);
+    const s = projVec(_W, rect);
+    if (prev && !s.behind && !prev.behind) { fxc.beginPath(); fxc.moveTo(prev.x, prev.y); fxc.lineTo(s.x, s.y); fxc.stroke(); }
+    prev = s;
+  }
+
+  fxc.globalAlpha = fx.glow; fxc.lineWidth = 3;                          // 亮弧 + 箭头：指示前进方向
+  prev = null; _TT.copy(_E1).multiplyScalar(R).add(tgt);
+  for (let i = 0; i <= N; i++) {
+    _Q.setFromAxisAngle(_A, span * i / N);
+    _W.copy(_E1).applyQuaternion(_Q).multiplyScalar(R).add(tgt);
+    const s = projVec(_W, rect);
+    if (prev && !s.behind && !prev.behind) { fxc.beginPath(); fxc.moveTo(prev.x, prev.y); fxc.lineTo(s.x, s.y); fxc.stroke(); }
+    prev = s; _TT.copy(_W);
+  }
+  _E3.copy(_TT).sub(tgt).normalize();
+  _K.crossVectors(_A, _E3).multiplyScalar(R * .2);                        // 末端切线
+  _E1.copy(_TT).add(_K);
+  const tip = projVec(_TT, rect), tan = projVec(_E1, rect);
+  if (!tip.behind && !tan.behind) arrowHead(tip.x, tip.y, Math.atan2(tan.y - tip.y, tan.x - tip.x));
+  fxc.restore();
+}
+
+function drawFx() {
+  fxc.clearRect(0, 0, innerWidth, innerHeight);
+  if (!viewer || !viewer.controls) return;
+  // 始终以“当前轨道目标”为锚：旋转时它等于双击拾取点，平移时它随相机一起走，
+  // 而固定 world 坐标在平移后会被甩到画面外甚至相机背后
+  const rect = document.getElementById('app').getBoundingClientRect();
+  const p = projectTo(viewer.controls.target, rect);
+  if (!p) return;
+  const strong = Math.max(fx.glow, fx.flash);
+  fxc.save(); fxc.translate(p.x, p.y);
+  fxc.strokeStyle = '#7fb0ff'; fxc.fillStyle = '#fff';
+  fxc.globalAlpha = .35 + .5 * strong;
+  fxc.lineWidth = 1.6;
+  fxc.beginPath(); fxc.arc(0, 0, 11 + 5 * fx.flash, 0, Math.PI * 2); fxc.stroke();
+  fxc.beginPath(); fxc.arc(0, 0, 2.6, 0, Math.PI * 2); fxc.fill();
+  fxc.globalAlpha = .3 + .45 * strong;
+  fxc.beginPath(); fxc.moveTo(-19, 0); fxc.lineTo(-13, 0); fxc.moveTo(13, 0); fxc.lineTo(19, 0);
+  fxc.moveTo(0, -19); fxc.lineTo(0, -13); fxc.moveTo(0, 13); fxc.lineTo(0, 19); fxc.stroke();
+  fxc.restore();
+  if (fx.dir && fx.glow > .02) drawArrow3D(rect);
+  if (hudOn) drawGizmo();
+}
+
+// ---- 单一动画循环：推进相机操作 + 绘制覆盖层 ----
+let _prev = performance.now();
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min(.05, (now - _prev) / 1000); _prev = now;
+  stepCamera(dt);
+  fx.phase += dt;
+  fx.glow += ((held.size ? 1 : 0) - fx.glow) * Math.min(1, dt * (held.size ? 12 : 4));
+  fx.flash = Math.max(0, fx.flash - dt * 2.2);
+  drawHud(now);
+  drawFx();
+}
+requestAnimationFrame(tick);
+
+// ---------------------------------------------------------------
+// 模型切换按钮
+// ---------------------------------------------------------------
+function buildButtons() {
+  modelsEl.innerHTML = '';
+  MODELS.forEach(m => {
+    const b = document.createElement('button');
+    b.textContent = m.name;
+    if (m.file === currentFile) b.className = 'on';
+    b.onclick = () => loadModel(m);
+    modelsEl.appendChild(b);
+  });
+  const g = document.createElement('button');
+  g.textContent = gridVisible ? '隐藏网格' : '显示网格';
+  g.onclick = () => {
+    gridVisible = !gridVisible;
+    viewer?.threeScene.children.forEach(o => { if (o.isLineSegments) o.visible = gridVisible; });
+    buildButtons();
+  };
+  modelsEl.appendChild(g);
+  const h = document.createElement('button');
+  h.textContent = hudOn ? '坐标 开' : '坐标 关';
+  h.onclick = () => {
+    hudOn = !hudOn;
+    h.textContent = hudOn ? '坐标 开' : '坐标 关';   // 只改自己，不重建整排按钮
+    if (!hudOn) coordsEl.innerHTML = '';
+  };
+  modelsEl.appendChild(h);
+}
+
+// ---------------------------------------------------------------
+// 拖拽本地 .ply/.splat/.ksplat 文件直接预览（Blob URL 复用库内置加载器）
+// ---------------------------------------------------------------
+const EXT_FORMAT = { ply: SceneFormat.Ply, splat: SceneFormat.Splat, ksplat: SceneFormat.KSplat };
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', async e => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!EXT_FORMAT[ext]) return;
+  setLoading(true, `正在解析「${file.name}」…`);
+  currentFile = null;
+  try {
+    const v = await swapViewer();
+    const url = URL.createObjectURL(file);
+    await v.addSplatScene(url, {
+      format: EXT_FORMAT[ext],
+      splatAlphaRemovalThreshold: 5,
+      showLoadingSpinner: false,
+    });
+    statusEl.textContent = `${file.name}（本地文件 · ${fmtSplats(v.splatMesh)} splats）`;
+    v.start();
+    URL.revokeObjectURL(url);
+    buildButtons();
+    setLoading(false);
+  } catch (err) {
+    console.error(err);
+    setLoading(true, `「${file.name}」解析失败：${err.message || err}`);
+  }
+});
+
+loadModel(MODELS[0]);
+</script>
+</body>
+</html>

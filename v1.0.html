@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>实景 3D 展示 · Live-Action</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: none; }
+
+  /* ---- HUD ---- */
+  .hud { position: fixed; z-index: 10; color: #dde3ee; font: 13px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; }
+  #title { top: 14px; left: 16px; }
+  #title h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 1px; }
+  #title p { margin: 2px 0 0; opacity: .65; font-size: 12px; }
+  #hint { bottom: 12px; left: 16px; opacity: .55; font-size: 12px; }
+  #status { top: 14px; right: 16px; text-align: right; opacity: .8; }
+
+  /* ---- model switcher ---- */
+  #models { position: fixed; z-index: 11; bottom: 14px; right: 16px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70vw; }
+  #models button {
+    pointer-events: auto; cursor: pointer; border: 1px solid rgba(255,255,255,.25); border-radius: 20px;
+    background: rgba(20,26,38,.72); color: #cfd8ea; padding: 7px 16px; font-size: 13px; backdrop-filter: blur(6px);
+    transition: all .18s ease;
+  }
+  #models button:hover { border-color: rgba(255,255,255,.6); color: #fff; }
+  #models button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+
+  /* ---- directional pad ---- */
+  #padWrap { position: fixed; z-index: 12; left: 16px; bottom: 16px; display: flex; align-items: flex-end; gap: 12px; }
+  #pad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 4px; }
+  #pad button { width: 44px; height: 44px; padding: 0; border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+    background: rgba(20,26,38,.7); color: #cfd8ea; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(6px); transition: background .12s, transform .08s, border-color .12s; touch-action: none; user-select: none; }
+  #pad button:hover { background: rgba(47,111,237,.3); border-color: rgba(255,255,255,.55); }
+  #pad button.press { background: #2f6fed; border-color: #2f6fed; transform: scale(.92); }
+  #pad button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #pad .hub { border: 1px dashed rgba(255,255,255,.2); background: rgba(12,16,24,.6); cursor: default; }
+  #pad .hub.on { border-style: solid; border-color: #2f6fed; background: rgba(47,111,237,.25); }
+  #padWrap .col { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+  #modeBtn { border: 1px solid rgba(255,255,255,.22); border-radius: 10px; background: rgba(20,26,38,.7); color: #cfd8ea;
+    padding: 9px 12px; font: 13px/1 "Segoe UI", "PingFang SC", sans-serif; cursor: pointer; backdrop-filter: blur(6px);
+    display: flex; align-items: center; gap: 7px; }
+  #modeBtn:hover { border-color: rgba(255,255,255,.55); color: #fff; }
+  #modeBtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #resetBtn { border: 1px solid rgba(255,255,255,.16); border-radius: 10px; background: rgba(20,26,38,.55); color: #9fb0cc;
+    padding: 7px 12px; font: 12px/1 "Segoe UI", "PingFang SC", sans-serif; cursor: pointer; }
+  #resetBtn:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+
+  /* ---- overlay canvas: center marker + animated arrows ---- */
+  #fx { position: fixed; inset: 0; z-index: 11; pointer-events: none; }
+
+  /* ---- loading overlay ---- */
+  #loading { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+             flex-direction: column; gap: 14px; background: #0b0e14; color: #8fa2c0; font: 14px/1 "Segoe UI", sans-serif;
+             transition: opacity .4s; }
+  #loading.gone { opacity: 0; pointer-events: none; }
+  .spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.15); border-top-color: #2f6fed; animation: r 1s linear infinite; }
+  @keyframes r { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="title" class="hud">
+  <h1>LIVE-ACTION · 实景 3D</h1>
+  <p>3D Gaussian Splatting 实景模型展示</p>
+</div>
+<div id="status" class="hud"></div>
+<div id="hint" class="hud" style="bottom: auto; top: 52px">双击画面选中心点 · 左键拖拽旋转 · 滚轮缩放 · 右键平移</div>
+<div id="models"></div>
+
+<div id="padWrap">
+  <div id="pad"></div>
+  <div class="col">
+    <button id="modeBtn"></button>
+    <button id="resetBtn">回到初始中心</button>
+  </div>
+</div>
+
+<canvas id="fx"></canvas>
+
+<div id="loading"><div class="spin"></div><div id="loading-text">正在加载实景模型…</div></div>
+
+<!-- three.js 与 GaussianSplats3D 通过 ESM CDN 引入（jsDelivr 为国内可达镜像） -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.2.3/build/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+
+<script>
+// 模块加载失败兜底：若 6s 内未创建 canvas，提示网络/CDN 问题
+window.addEventListener('load', () => setTimeout(() => {
+  if (!document.querySelector('#app canvas')) {
+    const l = document.getElementById('loading');
+    if (l && !l.querySelector('.err')) {
+      l.classList.add('err');
+      document.getElementById('loading-text').textContent =
+        '页面脚本未就绪：请确认浏览器可访问 cdn.jsdelivr.net，并通过本地 HTTP 服务打开本页（如 python -m http.server）。';
+    }
+  }
+}, 6000));
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { Viewer, SceneFormat } from '@mkkellogg/gaussian-splats-3d';
+
+const statusEl = document.getElementById('status');
+const loadingEl = document.getElementById('loading');
+const loadingTextEl = document.getElementById('loading-text');
+const modelsEl = document.getElementById('models');
+
+// ---------------------------------------------------------------
+// 模型清单：默认扫描 res/manifest.js（见该文件说明）；
+// 也可通过 URL 参数临时指定：index.html?file=res/xxx.ply&name=自定义名称
+// ---------------------------------------------------------------
+const DEFAULT_MODELS = [{ name: '石狮子', file: 'res/lion.ply' }];
+
+let MODELS = [...DEFAULT_MODELS];
+try {
+  // manifest.js 是普通脚本，用动态 <script> 引入后读取全局 SPLAT_MANIFEST
+  await new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'res/manifest.js'; s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  if (Array.isArray(window.SPLAT_MANIFEST) && window.SPLAT_MANIFEST.length) MODELS = window.SPLAT_MANIFEST;
+} catch (e) { /* 无清单时退回默认 */ }
+
+const urlFile = new URLSearchParams(location.search).get('file');
+if (urlFile) MODELS = [{ name: new URLSearchParams(location.search).get('name') || decodeURIComponent(urlFile.split('/').pop()), file: urlFile }, ...MODELS];
+
+// ---------------------------------------------------------------
+// Viewer：GaussianSplats3D 自带轨道相机控制（旋转/缩放/平移）；
+// v0.2.3 的加载是叠加式的、无移除 API，因此切换模型时重建 Viewer
+// ---------------------------------------------------------------
+let viewer = null;
+let currentFile = null;
+
+function createViewer() {
+  const v = new Viewer({
+    rootElement: document.getElementById('app'),   // v0.2.3 用 rootElement，非 container
+    cameraUp: [0, 1, 0],                            // Brush 等导出工具多为 Y-up
+    initialCameraPosition: [0, 1.5, 6],
+    initialCameraLookAt: [0, 0, 0],
+    gpuAcceleratedSort: true,                       // GPU 预计算排序距离
+    halfPrecisionCovariancesOnGPU: true,            // 半精度协方差，省显存
+    sharedMemoryForWorkers: false,                  // 避免依赖 COOP/COEP 跨源隔离头
+    ignoreDevicePixelRatio: false,
+  });
+  // 接管焦点选取：库默认“单击即改焦点”，与需求“双击选中心点”冲突，先屏蔽
+  v.checkForFocalPointChange = () => {};
+
+  // 深色渐变环境背景，突出实景主体
+  const c = document.createElement('canvas'); c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#141a26'); grad.addColorStop(.55, '#0b0e14'); grad.addColorStop(1, '#05070b');
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  v.threeScene.background = tex;                 // v0.2.3 无 getScene()，直接访问内部 threeScene
+
+  // 地面参考网格（可开关）
+  const grid = new THREE.GridHelper(20, 40, 0x2a3a55, 0x1a2333);
+  grid.position.y = -0.001;
+  grid.visible = gridVisible;
+  v.threeScene.add(grid);
+  return v;
+}
+let gridVisible = true;
+
+function setLoading(on, text) {
+  loadingTextEl.textContent = text || '正在加载实景模型…';
+  loadingEl.classList.toggle('gone', !on);
+}
+
+async function swapViewer() {
+  if (viewer) { const old = viewer; viewer = null; try { await old.dispose(); } catch (e) {} }
+  document.getElementById('app').innerHTML = '';
+  center3D = null; held.clear(); syncHub();      // 模型切换后中心点回到默认
+  viewer = createViewer();
+  window.__viewer = viewer;               // 调试/验收钩子：暴露相机与轨道目标，便于比对操作前后变化
+  return viewer;
+}
+
+async function loadModel(model) {
+  setLoading(true, `正在加载「${model.name}」…`);
+  statusEl.textContent = '加载中…';
+  currentFile = model.file;
+  try {
+    const v = await swapViewer();
+    await v.addSplatScene(model.file, {
+      format: model.format,
+      splatAlphaRemovalThreshold: 5,     // 过滤近乎透明的 splat
+      showLoadingSpinner: false,
+      position: model.position || [0, 0, 0],
+      rotation: model.rotation || [0, 0, 0, 1],   // 注意：四元数 [x,y,z,w]
+      scale: normScale(model.scale),               // 库要求 [x,y,z] 数组，清单里写数字也可
+    });
+    statusEl.textContent = `${model.name} · ${fmtSplats(v.splatMesh)} splats`;
+    v.start();
+    buildButtons();
+    setLoading(false);
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = '加载失败';
+    setLoading(true, `「${model.name}」加载失败：${err.message || err}。请确认已启动本地 HTTP 服务且浏览器可访问 CDN。`);
+  }
+}
+
+function normScale(s) {
+  if (!s) return [1, 1, 1];
+  return Array.isArray(s) ? s : [s, s, s];
+}
+
+function fmtSplats(mesh) {
+  const n = mesh?.getSplatCount?.() ?? 0;
+  return n ? n.toLocaleString() : '?';
+}
+
+// ---------------------------------------------------------------
+// 中心点选取（双击）+ 方向盘（环绕/平移）+ 中心点箭头动效
+// ---------------------------------------------------------------
+const ROT_SPEED = Math.PI / 3;      // 环绕角速度 60°/s
+const PAN_FACTOR = 0.22;            // 平移速度 = 相机到中心距离 × 此系数
+
+let mode = 'rotate';                // 'rotate' | 'pan'
+let center3D = null;                // 双击选中的世界坐标（null = 用轨道默认目标）
+let centerNext = null;              // 中心点过渡动画终点
+const held = new Set();             // 当前按下的方向盘按钮（存 "x,y"）
+const fx = { dir: null, glow: 0, phase: 0, flash: 0 };
+
+const padEl = document.getElementById('pad');
+const hubEl = Object.assign(document.createElement('button'), { className: 'hub', title: '当前中心点' });
+hubEl.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+
+// 3×3 方向盘：中心为指示点，周围 8 个方向（含四个倾斜方向）
+const DIRS = [[-1,-1],[0,-1],[1,-1],[-1,0],null,[1,0],[-1,1],[0,1],[1,1]];
+const CHEV = '<svg viewBox="0 0 24 24"><path d="M12 19V6"/><path d="M6 11l6-6 6 6"/></svg>';
+DIRS.forEach((d, i) => {
+  if (!d) { padEl.appendChild(hubEl); return; }
+  const b = document.createElement('button');
+  b.innerHTML = CHEV;
+  b.firstChild && b.firstChild.style.setProperty('transform', `rotate(${Math.atan2(-d[1], d[0]) * -180 / Math.PI + 90}deg)`);
+  b.title = `dir ${d[0]},${d[1]}`;
+  const key = d.join(',');
+  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); b.classList.add('press'); held.add(key); });
+  const off = () => { b.classList.remove('press'); held.delete(key); };
+  b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('lostpointercapture', off);
+  padEl.appendChild(b);
+});
+function syncHub() { hubEl.classList.toggle('on', !!center3D); }
+
+// 平移 / 旋转 切换
+const ICON_PAN = '<svg viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M14 6l6 6-6 6"/></svg>';
+const ICON_ROT = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/></svg>';
+const modeBtn = document.getElementById('modeBtn');
+function syncMode() {
+  modeBtn.innerHTML = (mode === 'rotate' ? ICON_ROT : ICON_PAN) + `<span>${mode === 'rotate' ? '旋转' : '平移'}</span>`;
+  modeBtn.title = '切换：围绕中心点旋转 / 平移视角';
+}
+modeBtn.onclick = () => { mode = mode === 'rotate' ? 'pan' : 'rotate'; syncMode(); };
+document.getElementById('resetBtn').onclick = () => {
+  if (!viewer) return;
+  center3D = null; centerNext = null;
+  viewer.controls.target.set(0, 0, 0);
+  syncHub();
+  statusEl.textContent = '中心点已回到默认 (0, 0, 0)';
+};
+syncMode();
+
+// ---- 双击（兼容触屏双击）选中心点 ----
+let lastTap = { t: 0, x: 0, y: 0 };
+window.addEventListener('pointerup', e => {
+  if (e.button !== 0 || !viewer || !viewer.splatMesh) return;
+  if (e.target.closest && e.target.closest('#padWrap, #models, #loading')) return;   // 不干扰 UI
+  const rect = document.getElementById('app').getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const now = performance.now();
+  const isDouble = now - lastTap.t < 350 && Math.hypot(x - lastTap.x, y - lastTap.y) < 14;
+  lastTap = { t: now, x, y };
+  if (isDouble) { lastTap.t = 0; pickCenter(x, y, rect); }
+});
+
+const _hits = [], _px = new THREE.Vector2(), _dim = new THREE.Vector2(), _pt = new THREE.Vector3();
+function pickCenter(x, y, rect) {
+  _px.set(x, y);                                    // 库要求左上原点的像素坐标
+  _dim.set(rect.width, rect.height);
+  _hits.length = 0;
+  viewer.raycaster.setFromCameraAndScreenPosition(viewer.camera, _px, _dim);
+  viewer.raycaster.intersectSplatMesh(viewer.splatMesh, _hits);
+  if (!_hits.length) { statusEl.textContent = '这一点没有拾到模型，换个位置双击'; fx.flash = .5; return; }
+  center3D = _hits[0].origin.clone();
+  centerNext = center3D.clone();
+  fx.flash = 1; syncHub();
+  const p = center3D;
+  statusEl.textContent = `中心点 (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+}
+
+// ---- 相机操作：自己算球坐标（库的旋转/平移辅助函数是私有的）----
+const _off = new THREE.Vector3(), _sph = new THREE.Spherical(), _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3();
+function orbit(dTheta, dPhi) {
+  const cam = viewer.camera, tgt = viewer.controls.target;
+  _off.copy(cam.position).sub(tgt);
+  _sph.setFromVector3(_off);
+  _sph.theta += dTheta;
+  // 与库给 OrbitControls 设的 min/maxPolarAngle 一致，避免被它反复限幅拉回
+  _sph.phi = Math.max(0.1, Math.min(Math.PI * .75, _sph.phi + dPhi));
+  _off.setFromSpherical(_sph);
+  cam.position.copy(tgt).add(_off);
+  cam.lookAt(tgt);
+}
+function pan(dx, dy) {
+  const cam = viewer.camera, tgt = viewer.controls.target;
+  const k = cam.position.distanceTo(tgt) * PAN_FACTOR;
+  _v1.setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(dx * k);
+  _v2.setFromMatrixColumn(cam.matrixWorld, 1).multiplyScalar(dy * k);
+  cam.position.add(_v1).add(_v2);
+  tgt.add(_v1).add(_v2);
+}
+function stepCamera(dt) {
+  if (!viewer || !viewer.controls) return;
+  // 中心点过渡：平滑把轨道目标推到双击拾取点
+  if (centerNext) {
+    viewer.controls.target.lerp(centerNext, Math.min(1, dt * 7));
+    if (viewer.controls.target.distanceTo(centerNext) < 1e-3) { viewer.controls.target.copy(centerNext); centerNext = null; }
+  }
+  if (!held.size) { fx.dir = null; return; }
+  let ax = 0, ay = 0;
+  held.forEach(k => { const [x, y] = k.split(',').map(Number); ax += x; ay += y; });
+  const n = Math.hypot(ax, ay) || 1; ax /= n; ay /= n;
+  fx.dir = { x: ax, y: ay };
+  if (mode === 'rotate') orbit(-ax * ROT_SPEED * dt, -ay * ROT_SPEED * dt);
+  else pan(ax * dt, ay * dt);
+}
+
+// ---- 覆盖层：中心点标记 + 方向箭头（平移直线 / 旋转弯曲）----
+const fxEl = document.getElementById('fx'), fxc = fxEl.getContext('2d');
+function resizeFx() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // canvas 不受 inset:0 约束（会取固有属性尺寸），必须显式定 CSS 尺寸，
+  // 否则 dpr=2 下覆盖层会被放大到 2× 位置、整体落在视口外
+  fxEl.style.width = innerWidth + 'px';
+  fxEl.style.height = innerHeight + 'px';
+  fxEl.width = innerWidth * dpr; fxEl.height = innerHeight * dpr;
+  fxc.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resizeFx); resizeFx();
+
+function projectTo(p, rect) {
+  _pt.copy(p).project(viewer.camera);
+  if (_pt.z > 1) return null;                       // 在相机背后
+  return { x: (_pt.x * .5 + .5) * rect.width, y: (-_pt.y * .5 + .5) * rect.height };
+}
+
+function drawArrow(sx, sy) {
+  const pulse = .5 + .5 * Math.sin(fx.phase * 8);
+  const a = fx.glow;
+  fxc.save(); fxc.translate(sx, sy); fxc.globalAlpha = a;
+  fxc.strokeStyle = '#7fb0ff'; fxc.fillStyle = '#7fb0ff'; fxc.lineWidth = 2.5; fxc.lineCap = 'round';
+  if (mode === 'pan') {
+    const ang = Math.atan2(fx.dir.y, fx.dir.x), len = 30 + 16 * pulse, r0 = 16;
+    const ex = Math.cos(ang) * (r0 + len), ey = Math.sin(ang) * (r0 + len);
+    fxc.beginPath(); fxc.moveTo(Math.cos(ang) * r0, Math.sin(ang) * r0); fxc.lineTo(ex, ey); fxc.stroke();
+    fxc.translate(ex, ey); fxc.rotate(ang);
+    fxc.beginPath(); fxc.moveTo(9, 0); fxc.lineTo(-5, 6); fxc.lineTo(-5, -6); fxc.closePath(); fxc.fill();
+  } else {
+    const ang = Math.atan2(fx.dir.y, fx.dir.x);
+    const R = 26 + 8 * pulse, sweep = .55 + .25 * pulse, a1 = ang - Math.PI / 2;
+    fxc.beginPath(); fxc.arc(0, 0, R, a1 - 2 * sweep, a1); fxc.stroke();
+    fxc.save();
+    fxc.translate(Math.cos(a1) * R, Math.sin(a1) * R);
+    fxc.rotate(a1 + Math.PI / 2);                   // 弧端切线方向 = 按钮方向
+    fxc.beginPath(); fxc.moveTo(9, 0); fxc.lineTo(-5, 6); fxc.lineTo(-5, -6); fxc.closePath(); fxc.fill();
+    fxc.restore();
+  }
+  fxc.restore();
+}
+
+function drawFx() {
+  fxc.clearRect(0, 0, innerWidth, innerHeight);
+  if (!viewer || !viewer.controls) return;
+  // 始终以“当前轨道目标”为锚：旋转时它等于双击拾取点，平移时它随相机一起走，
+  // 而固定 world 坐标在平移后会被甩到画面外甚至相机背后
+  const rect = document.getElementById('app').getBoundingClientRect();
+  const p = projectTo(viewer.controls.target, rect);
+  if (!p) return;
+  const strong = Math.max(fx.glow, fx.flash);
+  fxc.save(); fxc.translate(p.x, p.y);
+  fxc.strokeStyle = '#7fb0ff'; fxc.fillStyle = '#fff';
+  fxc.globalAlpha = .35 + .5 * strong;
+  fxc.lineWidth = 1.6;
+  fxc.beginPath(); fxc.arc(0, 0, 11 + 5 * fx.flash, 0, Math.PI * 2); fxc.stroke();
+  fxc.beginPath(); fxc.arc(0, 0, 2.6, 0, Math.PI * 2); fxc.fill();
+  fxc.globalAlpha = .3 + .45 * strong;
+  fxc.beginPath(); fxc.moveTo(-19, 0); fxc.lineTo(-13, 0); fxc.moveTo(13, 0); fxc.lineTo(19, 0);
+  fxc.moveTo(0, -19); fxc.lineTo(0, -13); fxc.moveTo(0, 13); fxc.lineTo(0, 19); fxc.stroke();
+  fxc.restore();
+  if (fx.dir && fx.glow > .02) drawArrow(p.x, p.y);
+}
+
+// ---- 单一动画循环：推进相机操作 + 绘制覆盖层 ----
+let _prev = performance.now();
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min(.05, (now - _prev) / 1000); _prev = now;
+  stepCamera(dt);
+  fx.phase += dt;
+  fx.glow += ((held.size ? 1 : 0) - fx.glow) * Math.min(1, dt * (held.size ? 12 : 4));
+  fx.flash = Math.max(0, fx.flash - dt * 2.2);
+  drawFx();
+}
+requestAnimationFrame(tick);
+
+// ---------------------------------------------------------------
+// 模型切换按钮
+// ---------------------------------------------------------------
+function buildButtons() {
+  modelsEl.innerHTML = '';
+  MODELS.forEach(m => {
+    const b = document.createElement('button');
+    b.textContent = m.name;
+    if (m.file === currentFile) b.className = 'on';
+    b.onclick = () => loadModel(m);
+    modelsEl.appendChild(b);
+  });
+  const g = document.createElement('button');
+  g.textContent = gridVisible ? '隐藏网格' : '显示网格';
+  g.onclick = () => {
+    gridVisible = !gridVisible;
+    viewer?.threeScene.children.forEach(o => { if (o.isLineSegments) o.visible = gridVisible; });
+    buildButtons();
+  };
+  modelsEl.appendChild(g);
+}
+
+// ---------------------------------------------------------------
+// 拖拽本地 .ply/.splat/.ksplat 文件直接预览（Blob URL 复用库内置加载器）
+// ---------------------------------------------------------------
+const EXT_FORMAT = { ply: SceneFormat.Ply, splat: SceneFormat.Splat, ksplat: SceneFormat.KSplat };
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', async e => {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!EXT_FORMAT[ext]) return;
+  setLoading(true, `正在解析「${file.name}」…`);
+  currentFile = null;
+  try {
+    const v = await swapViewer();
+    const url = URL.createObjectURL(file);
+    await v.addSplatScene(url, {
+      format: EXT_FORMAT[ext],
+      splatAlphaRemovalThreshold: 5,
+      showLoadingSpinner: false,
+    });
+    statusEl.textContent = `${file.name}（本地文件 · ${fmtSplats(v.splatMesh)} splats）`;
+    v.start();
+    URL.revokeObjectURL(url);
+    buildButtons();
+    setLoading(false);
+  } catch (err) {
+    console.error(err);
+    setLoading(true, `「${file.name}」解析失败：${err.message || err}`);
+  }
+});
+
+loadModel(MODELS[0]);
+</script>
+</body>
+</html>
