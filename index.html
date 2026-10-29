@@ -55,6 +55,22 @@
     padding: 7px 12px; font: 12px/1 "Segoe UI", "PingFang SC", sans-serif; cursor: pointer; }
   #resetBtn:hover { color: #fff; border-color: rgba(255,255,255,.4); }
 
+  /* ---- avatar move pad (bottom center) ---- */
+  #moveWrap { position: fixed; z-index: 12; left: 50%; transform: translateX(-50%); bottom: 16px; display: flex; align-items: flex-end; gap: 10px; }
+  #mpad { display: grid; grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 40px); gap: 4px; }
+  #mpad .cell { width: 40px; height: 40px; }
+  #mpad button { width: 40px; height: 40px; padding: 0; border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+    background: rgba(20,26,38,.7); color: #cfd8ea; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(6px); transition: background .12s, transform .08s, border-color .12s; touch-action: none; user-select: none; }
+  #mpad button:hover { background: rgba(47,174,107,.3); border-color: rgba(255,255,255,.55); }
+  #mpad button.press { background: #2fae6b; border-color: #2fae6b; transform: scale(.92); }
+  #mpad button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #moveCol { display: flex; flex-direction: column; gap: 8px; }
+  #moveCol button { cursor: pointer; border: 1px solid rgba(255,255,255,.22); border-radius: 10px;
+    background: rgba(20,26,38,.7); color: #cfd8ea; padding: 10px 14px; font: 13px/1 "Segoe UI", "PingFang SC", sans-serif;
+    backdrop-filter: blur(6px); }
+  #moveCol button:hover { border-color: rgba(255,255,255,.55); color: #fff; }
+
   /* ---- overlay canvas: center marker + animated arrows ---- */
   #fx { position: fixed; inset: 0; z-index: 11; pointer-events: none; }
 
@@ -84,6 +100,14 @@
   <div class="col">
     <button id="modeBtn"></button>
     <button id="resetBtn">回到初始中心</button>
+  </div>
+</div>
+
+<div id="moveWrap">
+  <div id="mpad"></div>
+  <div id="moveCol">
+    <button id="jumpBtn">跳起</button>
+    <button id="lieBtn">趴下</button>
   </div>
 </div>
 
@@ -194,6 +218,12 @@ function createViewer() {
   grid.position.z = -0.001;
   grid.visible = gridVisible;
   v.threeScene.add(grid);
+  // 色块人用的是受光材质，场景里原本没有灯（splat 走自定义 shader），补两盏
+  v.threeScene.add(new THREE.HemisphereLight(0xffffff, 0x30364a, 1.05));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.15);
+  dl.position.set(3, -5, 6);
+  v.threeScene.add(dl);
+  buildAvatar(v);          // 切换模型会重建 Viewer，所以色块人也重新挂回
   return v;
 }
 let gridVisible = true;
@@ -307,7 +337,7 @@ syncMode();
 let lastTap = { t: 0, x: 0, y: 0 };
 window.addEventListener('pointerup', e => {
   if (e.button !== 0 || !viewer || !viewer.splatMesh) return;
-  if (e.target.closest && e.target.closest('#padWrap, #models, #loading')) return;   // 不干扰 UI
+  if (e.target.closest && e.target.closest('#padWrap, #moveWrap, #models, #loading')) return;   // 不干扰 UI
   const rect = document.getElementById('app').getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const now = performance.now();
@@ -371,6 +401,120 @@ function pan(dx, dy) {
   if (center3D) center3D.add(_pd);
   if (centerNext) centerNext.add(_pd);
 }
+// ---- 3D 色块人：底部中间方向键驱动行走（四肢摆动）+ 跳起 / 趴下 ----
+const AV_SPEED = 1.6;   // 世界单位/秒；Z-up 约定下地面就是 XY 平面
+const AV_GRAV = 11;
+const av = { x: 0, y: 0, z: 0, yaw: 0, yawTo: 0, vz: 0, phase: 0, swing: 0, lie: 0, lieOn: false };
+let avatar = null, avParts = null;
+
+// root 只管位置与水平朝向（绕 Z 的 yaw）；body 只负责绕局部 X 的俯仰，
+// 这样避开欧拉顺序耦合，趴下与转身互不干扰
+function buildAvatar(v) {
+  const root = new THREE.Group(), body = new THREE.Group();
+  root.add(body);
+  const mat = c => new THREE.MeshLambertMaterial({ color: c });
+  const skin = mat(0xf0c086), shirt = mat(0x2f6fed), sleeve = mat(0x9fc4ff), pant = mat(0x33415c), dark = mat(0x141a26);
+  const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  // 关节组：肢体网格挂在关节下方，绕关节的 X 轴前后摆
+  const limb = (px, pz, m, lw, ld, lh) => {
+    const g = new THREE.Group();
+    g.position.set(px, 0, pz);
+    const mesh = box(lw, ld, lh, m);
+    mesh.position.z = -lh / 2;
+    g.add(mesh);
+    body.add(g);
+    return g;
+  };
+  const legL = limb(.09, .75, pant, .16, .16, .7), legR = limb(-.09, .75, pant, .16, .16, .7);
+  const armL = limb(.28, 1.38, sleeve, .12, .12, .56), armR = limb(-.28, 1.38, sleeve, .12, .12, .56);
+  const torso = box(.44, .24, .62, shirt); torso.position.z = 1.12; body.add(torso);
+  const head = box(.28, .28, .28, skin); head.position.z = 1.6; body.add(head);
+  const nose = box(.07, .05, .05, dark); nose.position.set(0, .15, 1.62); body.add(nose);  // 鼻尖标出正面（局部 +Y）
+  v.threeScene.add(root);
+  avatar = root;
+  avParts = { body, legL, legR, armL, armR };
+}
+
+const mheld = new Set();
+const _af = new THREE.Vector3(), _ar = new THREE.Vector3(), _ag = new THREE.Vector3();
+
+function stepAvatar(dt) {
+  if (!avatar) return;
+  let mx = 0, my = 0;                       // 屏幕系：右为 +x，下为 +y（与相机方向盘同一约定）
+  mheld.forEach(k => { const [x, y] = k.split(',').map(Number); mx += x; my += y; });
+  const cam = viewer?.camera, tgt = viewer?.controls?.target;
+  let walk = 0;
+  if ((mx || my) && cam && tgt) {
+    if (av.lieOn) { av.lieOn = false; lieBtn.textContent = '趴下'; }   // 趴着时按方向键先站起来
+    // 屏幕相对方向：f = 相机视线投影到 XY 地面（“上”键方向），r = 屏幕右
+    _af.set(tgt.x - cam.position.x, tgt.y - cam.position.y, 0);
+    if (_af.lengthSq() < 1e-6) _af.set(0, 1, 0); else _af.normalize();
+    _ar.set(_af.y, -_af.x, 0);
+    _ag.set(_ar.x * mx - _af.x * my, _ar.y * mx - _af.y * my, 0);
+    if (_ag.lengthSq() > 1e-8) {
+      _ag.normalize();
+      av.x = Math.max(-12, Math.min(12, av.x + _ag.x * AV_SPEED * dt));
+      av.y = Math.max(-12, Math.min(12, av.y + _ag.y * AV_SPEED * dt));
+      av.yawTo = Math.atan2(_ag.x, _ag.y);   // 脸转向运动方向
+      av.phase += dt * 9.5;
+      walk = 1;
+    }
+  }
+  // 转向只取最短弧，连续绕行不会抽风
+  let dy = av.yawTo - av.yaw;
+  dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  av.yaw += dy * Math.min(1, dt * 10);
+  // 摆动幅度在停止后缓收到 0，不会硬停
+  av.swing += (walk - av.swing) * Math.min(1, dt * 8);
+  const s = Math.sin(av.phase) * .55 * av.swing;
+  avParts.legL.rotation.x = s; avParts.legR.rotation.x = -s;
+  avParts.armL.rotation.x = -s * .8; avParts.armR.rotation.x = s * .8;
+  // 跳起：自由积分，落地归零
+  if (av.vz !== 0 || av.z > 0) {
+    av.vz -= AV_GRAV * dt;
+    av.z += av.vz * dt;
+    if (av.z <= 0) { av.z = 0; av.vz = 0; }
+  }
+  // 趴下：绕局部 X 俯仰到 -90°（脸朝下、头朝前），同时抬高一点避免陷入地面
+  av.lie += ((av.lieOn ? 1 : 0) - av.lie) * Math.min(1, dt * 6);
+  avParts.body.rotation.x = -av.lie * Math.PI / 2;
+  const bob = (walk && av.z === 0) ? Math.abs(Math.sin(av.phase)) * .03 * av.swing : 0;
+  avatar.position.set(av.x, av.y, av.z + av.lie * .16 + bob);
+  avatar.rotation.z = av.yaw;
+}
+
+const mpadEl = document.getElementById('mpad');
+// 与相机方向盘同构的十字：上/左/右/下，按住连续走，松开就停
+[[null, [0, -1], null], [[-1, 0], null, [1, 0]], [null, [0, 1], null]].flat().forEach(d => {
+  if (!d) { const c = document.createElement('span'); c.className = 'cell'; mpadEl.appendChild(c); return; }
+  const b = document.createElement('button');
+  b.innerHTML = CHEV;
+  b.firstChild && b.firstChild.style.setProperty('transform', `rotate(${Math.atan2(-d[1], d[0]) * -180 / Math.PI + 90}deg)`);
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    b.setPointerCapture?.(e.pointerId);
+    b.classList.add('press');
+    mheld.add(d.join(','));
+  });
+  const off = () => { b.classList.remove('press'); mheld.delete(d.join(',')); };
+  b.addEventListener('pointerup', off);
+  b.addEventListener('pointercancel', off);
+  b.addEventListener('lostpointercapture', off);
+  mpadEl.appendChild(b);
+});
+
+const jumpBtn = document.getElementById('jumpBtn'), lieBtn = document.getElementById('lieBtn');
+jumpBtn.onclick = () => {
+  if (!avatar) return;
+  av.lieOn = false; lieBtn.textContent = '趴下';   // 跳之前先站直
+  if (av.z === 0 && av.vz === 0) av.vz = 4.6;
+};
+lieBtn.onclick = () => {
+  if (!avatar) return;
+  av.lieOn = !av.lieOn;
+  lieBtn.textContent = av.lieOn ? '站起' : '趴下';
+};
+
 function stepCamera(dt) {
   if (!viewer || !viewer.controls) return;
   // 中心点过渡：平滑把轨道目标推到双击拾取点
@@ -583,6 +727,7 @@ function tick(now) {
   requestAnimationFrame(tick);
   const dt = Math.min(.05, (now - _prev) / 1000); _prev = now;
   stepCamera(dt);
+  stepAvatar(dt);
   fx.phase += dt;
   fx.glow += ((held.size ? 1 : 0) - fx.glow) * Math.min(1, dt * (held.size ? 12 : 4));
   fx.flash = Math.max(0, fx.flash - dt * 2.2);
