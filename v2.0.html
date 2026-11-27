@@ -91,13 +91,12 @@
 
 <div id="loading"><div class="spin"></div><div id="loading-text">正在加载实景模型…</div></div>
 
-<!-- three.js 与 GaussianSplats3D 通过 ESM CDN 引入（jsDelivr 为国内可达镜像） -->
+<!-- three.js r160 与 GaussianSplats3D 0.2.3 的 ESM 构建已内置在 lib/，不再依赖外网 CDN -->
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.2.3/build/gaussian-splats-3d.module.js"
+    "three": "./lib/three.module.min.js",
+    "@mkkellogg/gaussian-splats-3d": "./lib/gaussian-splats-3d.module.js"
   }
 }
 </script>
@@ -110,7 +109,7 @@ window.addEventListener('load', () => setTimeout(() => {
     if (l && !l.querySelector('.err')) {
       l.classList.add('err');
       document.getElementById('loading-text').textContent =
-        '页面脚本未就绪：请确认浏览器可访问 cdn.jsdelivr.net，并通过本地 HTTP 服务打开本页（如 python -m http.server）。';
+        '页面脚本未就绪：请确认 lib/ 下两个依赖文件存在，并通过本地 HTTP 服务打开本页（如 python -m http.server）。';
     }
   }
 }, 6000));

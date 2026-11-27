@@ -13,7 +13,8 @@ python -m http.server 8090
 - `res/` 存放建模文件（.ply 为主，也兼容 .splat / .ksplat / .spz）。
 - 放入新模型后，在 `res/manifest.js` 的 `SPLAT_MANIFEST` 数组登记一行即可在右下角切换。
 - 支持直接把本地建模文件拖进网页预览；也支持 `?file=res/xxx.ply&name=名称` 临时指定。
-- CDN 依赖 jsDelivr（three@0.160 + @mkkellogg/gaussian-splats-3d@0.2.3），需联网。
+- 依赖已内置在 `lib/`（three.js r160 + @mkkellogg/gaussian-splats-3d 0.2.3 的 ESM 构建），**不需要联网**，也不再用 CDN。
+- 仍需本地 HTTP 服务：浏览器禁止 `file://` 页面 `fetch` 本地 `.ply`，直接双击打开会加载失败（拖拽文件进页面除外）。
 
 ## 版本
 
